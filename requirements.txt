@@ -1,0 +1,12 @@
+flask
+pytesseract
+PyMuPDF
+transformers
+torch
+torchvision
+Pillow
+openpyxl
+opencv-contrib-python
+numpy
+img2table
+rapidfuzz

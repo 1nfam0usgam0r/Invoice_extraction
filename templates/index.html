@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Invoice Extraction</title>
+    <style>
+        :root {
+            --blue: #2563eb;
+            --green: #16a34a;
+            --red: #dc2626;
+            --ink: #1f2937;
+            --muted: #6b7280;
+            --line: #e5e7eb;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            padding: 32px 16px 64px;
+            background: #f5f6f8;
+            color: var(--ink);
+            font-family: system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+            font-size: 15px;
+            line-height: 1.5;
+        }
+
+        .wrap { max-width: 960px; margin: 0 auto; }
+
+        header { margin-bottom: 24px; }
+        header h1 { margin: 0 0 4px; font-size: 24px; font-weight: 650; }
+        header p { margin: 0; color: var(--muted); font-size: 14px; }
+
+        .card {
+            background: #fff;
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(16, 24, 40, .06), 0 1px 2px rgba(16, 24, 40, .04);
+            padding: 24px;
+            margin-bottom: 20px;
+        }
+
+        .card h2 {
+            margin: 0 0 16px;
+            font-size: 15px;
+            font-weight: 650;
+            text-transform: uppercase;
+            letter-spacing: .04em;
+            color: var(--muted);
+        }
+
+        .fields {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+
+        .field label {
+            display: block;
+            margin-bottom: 6px;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .field input[type="file"] {
+            width: 100%;
+            padding: 10px;
+            border: 1px dashed var(--line);
+            border-radius: 8px;
+            background: #fafafa;
+            font: inherit;
+            font-size: 13px;
+            cursor: pointer;
+        }
+
+        .field input[type="file"]:focus { outline: 2px solid var(--blue); outline-offset: 1px; }
+
+        button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            padding: 12px 22px;
+            border: 0;
+            border-radius: 8px;
+            background: var(--blue);
+            color: #fff;
+            font: inherit;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        button:hover:not(:disabled) { background: #1d4ed8; }
+        button:disabled { background: #9ca3af; cursor: not-allowed; }
+
+        .spinner {
+            width: 15px;
+            height: 15px;
+            border: 2px solid rgba(255, 255, 255, .4);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin .7s linear infinite;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .steps {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px 0;
+            list-style: none;
+            margin: 0;
+            padding: 0;
+        }
+
+        .step {
+            flex: 1 1 0;
+            min-width: 92px;
+            text-align: center;
+            position: relative;
+            font-size: 12px;
+            color: var(--muted);
+        }
+
+        /* Connector line between step dots. */
+        .step::before {
+            content: "";
+            position: absolute;
+            top: 13px;
+            left: -50%;
+            width: 100%;
+            height: 2px;
+            background: var(--line);
+            z-index: 0;
+        }
+
+        .step:first-child::before { display: none; }
+
+        .dot {
+            position: relative;
+            z-index: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 28px;
+            height: 28px;
+            margin: 0 auto 8px;
+            border: 2px solid var(--line);
+            border-radius: 50%;
+            background: #fff;
+            font-size: 12px;
+            font-weight: 650;
+            color: var(--muted);
+        }
+
+        .step.done .dot { border-color: var(--green); background: var(--green); color: #fff; }
+        .step.done::before { background: var(--green); }
+        .step.done .label { color: var(--ink); }
+
+        .step.active .dot {
+            border-color: var(--blue);
+            background: var(--blue);
+            color: #fff;
+            box-shadow: 0 0 0 4px rgba(37, 99, 235, .15);
+        }
+
+        .step.active .label { color: var(--blue); font-weight: 650; }
+        .step.failed .dot { border-color: var(--red); background: var(--red); color: #fff; }
+        .step.failed .label { color: var(--red); font-weight: 650; }
+
+        .detail {
+            margin: 18px 0 0;
+            font-size: 13px;
+            color: var(--muted);
+            text-align: center;
+            min-height: 20px;
+        }
+
+        .error {
+            margin-top: 16px;
+            padding: 12px 14px;
+            border: 1px solid #fecaca;
+            border-left: 4px solid var(--red);
+            border-radius: 8px;
+            background: #fef2f2;
+            color: #991b1b;
+            font-size: 14px;
+            word-break: break-word;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 14px;
+        }
+
+        .stat {
+            padding: 18px 16px;
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            text-align: center;
+            background: #fafbfc;
+        }
+
+        .stat .value { font-size: 30px; font-weight: 700; line-height: 1.1; }
+        .stat .name { margin-top: 6px; font-size: 12px; color: var(--muted); }
+        .stat.blue .value { color: var(--blue); }
+        .stat.green .value { color: var(--green); }
+        .stat.red .value { color: var(--red); }
+
+        .download { text-align: center; }
+        .download button { width: 100%; max-width: 340px; padding: 16px 24px; font-size: 16px; }
+        .download p { margin: 12px 0 0; font-size: 13px; color: var(--muted); }
+
+        [hidden] { display: none !important; }
+
+        @media (max-width: 640px) {
+            .fields { grid-template-columns: 1fr; }
+            .stats { grid-template-columns: repeat(2, 1fr); }
+            .step { flex-basis: 25%; min-width: 0; }
+            .step::before { display: none; }
+            .card { padding: 18px; }
+        }
+    </style>
+</head>
+<body>
+<div class="wrap">
+
+    <header>
+        <h1>Invoice Extraction</h1>
+        <p>Upload a bill and its lorry receipts to reconcile them into one Excel report.</p>
+    </header>
+
+    <!-- SECTION 1 - Upload -->
+    <section class="card">
+        <h2>Documents</h2>
+        <form id="upload-form">
+            <div class="fields">
+                <div class="field">
+                    <label for="combined-pdf">Upload PDF</label>
+                    <input type="file" id="combined-pdf" name="combined_pdf" accept=".pdf" required>
+                </div>
+            </div>
+            <button type="submit" id="submit-btn">
+                <span class="spinner" id="spinner" hidden></span>
+                <span id="submit-label">Upload &amp; Process</span>
+            </button>
+        </form>
+        <div class="error" id="upload-error" hidden></div>
+    </section>
+
+    <!-- SECTION 2 - Progress -->
+    <section class="card" id="progress-card" hidden>
+        <h2>Progress</h2>
+        <ul class="steps" id="steps"></ul>
+        <p class="detail" id="detail"></p>
+        <div class="error" id="process-error" hidden></div>
+    </section>
+
+    <!-- SECTION 3 - Summary -->
+    <section class="card" id="summary-card" hidden>
+        <h2>Summary</h2>
+        <div class="stats">
+            <div class="stat blue"><div class="value" id="stat-bill-rows">0</div><div class="name">LR Rows in Bill</div></div>
+            <div class="stat blue"><div class="value" id="stat-lr-docs">0</div><div class="name">LR Docs Processed</div></div>
+            <div class="stat green"><div class="value" id="stat-matched">0</div><div class="name">Fully Matched</div></div>
+            <div class="stat red"><div class="value" id="stat-flagged">0</div><div class="name">Flagged / Missing</div></div>
+        </div>
+    </section>
+
+    <!-- SECTION 4 - Download -->
+    <section class="card download" id="download-card" hidden>
+        <h2>Report</h2>
+        <button type="button" id="download-btn">Download Excel</button>
+        <p id="download-name"></p>
+    </section>
+
+</div>
+
+<script>
+(function () {
+    "use strict";
+
+    var STEPS = ["Upload", "Converting", "Invoice OCR", "Bill OCR", "Tax Invoice OCR", "LR OCR", "Reconciling", "Excel", "Done"];
+
+    var STATUS_TO_STEP = {
+        uploaded: 0,
+        converting: 1,
+        invoice_ocr: 2,
+        bill_ocr: 3,
+        tax_invoice_ocr: 4,
+        lr_ocr: 5,
+        reconciling: 6,
+        writing_excel: 7,
+        done: 8
+    };
+
+    var POLL_MS = 2000;
+
+    var form = document.getElementById("upload-form");
+    var submitBtn = document.getElementById("submit-btn");
+    var submitLabel = document.getElementById("submit-label");
+    var spinner = document.getElementById("spinner");
+    var uploadError = document.getElementById("upload-error");
+    var progressCard = document.getElementById("progress-card");
+    var stepsList = document.getElementById("steps");
+    var detail = document.getElementById("detail");
+    var processError = document.getElementById("process-error");
+    var summaryCard = document.getElementById("summary-card");
+    var downloadCard = document.getElementById("download-card");
+    var downloadBtn = document.getElementById("download-btn");
+    var downloadName = document.getElementById("download-name");
+
+    var jobId = null;
+    var pollTimer = null;
+    var finished = false;
+
+    // Build the stepper once.
+    STEPS.forEach(function (name, index) {
+        var item = document.createElement("li");
+        item.className = "step";
+        item.id = "step-" + index;
+        item.innerHTML = '<div class="dot">' + (index + 1) + '</div><div class="label">' + name + '</div>';
+        stepsList.appendChild(item);
+    });
+
+    function renderSteps(current, failed) {
+        STEPS.forEach(function (name, index) {
+            var item = document.getElementById("step-" + index);
+            item.className = "step";
+            if (failed && index === current) {
+                item.classList.add("failed");
+            } else if (index < current) {
+                item.classList.add("done");
+            } else if (index === current) {
+                item.classList.add(current === STEPS.length - 1 ? "done" : "active");
+            }
+        });
+    }
+
+    function showError(element, message) {
+        element.textContent = message;
+        element.hidden = false;
+    }
+
+    function setBusy(busy) {
+        submitBtn.disabled = busy;
+        spinner.hidden = !busy;
+        submitLabel.textContent = busy ? "Processing..." : "Upload & Process";
+    }
+
+    function stopPolling() {
+        if (pollTimer !== null) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+        }
+    }
+
+    function fail(message) {
+        if (finished) { return; }
+        finished = true;
+        stopPolling();
+        setBusy(false);
+        detail.textContent = "";
+        showError(processError, message);
+    }
+
+    function succeed(job) {
+        if (finished) { return; }
+        finished = true;
+        stopPolling();
+        setBusy(false);
+        renderSteps(STEPS.length - 1, false);
+        detail.textContent = "Finished.";
+
+        document.getElementById("stat-bill-rows").textContent = job.bill_rows_found != null ? job.bill_rows_found : 0;
+        document.getElementById("stat-lr-docs").textContent = job.lr_pages_processed != null ? job.lr_pages_processed : 0;
+        document.getElementById("stat-matched").textContent = job.matched != null ? job.matched : 0;
+        document.getElementById("stat-flagged").textContent = job.flagged != null ? job.flagged : 0;
+
+        summaryCard.hidden = false;
+        downloadCard.hidden = false;
+        downloadName.textContent = "reconciliation_" + jobId.slice(0, 8) + ".xlsx";
+    }
+
+    function applyStatus(job) {
+        if (!job || finished) { return; }
+
+        if (job.status === "error") {
+            var current = STATUS_TO_STEP[job.last_stage];
+            renderSteps(current != null ? current : 0, true);
+            fail(job.error || "Processing failed.");
+            return;
+        }
+
+        var step = STATUS_TO_STEP[job.status];
+        if (step == null) { return; }
+
+        renderSteps(step, false);
+        detail.textContent = job.detail || (job.status === "done" ? "" : "Working...");
+
+        if (job.status === "done") {
+            succeed(job);
+        }
+    }
+
+    function poll() {
+        fetch("/status/" + jobId)
+            .then(function (response) {
+                if (!response.ok) { throw new Error("Status check failed (" + response.status + ")."); }
+                return response.json();
+            })
+            .then(applyStatus)
+            .catch(function (error) { fail(error.message); });
+    }
+
+    form.addEventListener("submit", function (event) {
+        event.preventDefault();
+
+        uploadError.hidden = true;
+        processError.hidden = true;
+        summaryCard.hidden = true;
+        downloadCard.hidden = true;
+        finished = false;
+        jobId = null;
+        stopPolling();
+
+        var combinedFile = document.getElementById("combined-pdf").files[0];
+
+        if (!combinedFile) {
+            showError(uploadError, "Please choose a PDF.");
+            return;
+        }
+
+        var payload = new FormData();
+        payload.append("combined_pdf", combinedFile);
+
+        setBusy(true);
+
+        fetch("/upload", { method: "POST", body: payload })
+            .then(function (response) {
+                return response.json().then(function (data) {
+                    if (!response.ok) { throw new Error(data.error || "Upload failed."); }
+                    return data;
+                });
+            })
+            .then(function (data) {
+                jobId = data.job_id;
+                progressCard.hidden = false;
+                renderSteps(0, false);
+                detail.textContent = "Uploaded. Starting...";
+
+                // The pipeline runs in a background thread; this request
+                // returns immediately. Progress and completion come from
+                // polling /status.
+                fetch("/process/" + jobId, { method: "POST" })
+                    .then(function (response) {
+                        return response.json().then(function (result) {
+                            if (!response.ok) { throw new Error(result.error || "Processing failed."); }
+                        });
+                    })
+                    .catch(function (error) { fail(error.message); });
+
+                pollTimer = setInterval(poll, POLL_MS);
+                poll();
+            })
+            .catch(function (error) {
+                setBusy(false);
+                showError(uploadError, error.message);
+            });
+    });
+
+    downloadBtn.addEventListener("click", function () {
+        if (jobId) { window.location.href = "/download/" + jobId; }
+    });
+}());
+</script>
+</body>
+</html>
