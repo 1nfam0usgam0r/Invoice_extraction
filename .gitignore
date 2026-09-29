@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+uploads/
+outputs/
+*.png
+*.pdf
+*.xlsx
+tmp_preprocess_check/
+models/
+server.log
+server_err.log
