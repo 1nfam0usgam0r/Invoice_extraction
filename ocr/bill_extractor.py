@@ -36,7 +36,7 @@ try:
         validate_gross_qty, validate_shipment_no, validate_sr_no,
         validate_vehicle_no,
     )
-    from .column_config import get_columns, get_whitelists
+    from .column_config import CLIENT_COLUMNS, get_columns, get_whitelists
     from .invoice_extractor import extract_label_values, ocr_segments, preprocess
     from .reader import TESSERACT_PATH  # noqa: F401  (sets tesseract_cmd)
 except ImportError:   # running this file directly from inside ocr/
@@ -45,7 +45,7 @@ except ImportError:   # running this file directly from inside ocr/
         validate_gross_qty, validate_shipment_no, validate_sr_no,
         validate_vehicle_no,
     )
-    from column_config import get_columns, get_whitelists
+    from column_config import CLIENT_COLUMNS, get_columns, get_whitelists
     from invoice_extractor import extract_label_values, ocr_segments, preprocess
     from reader import TESSERACT_PATH  # noqa: F401
 
@@ -88,9 +88,9 @@ CELL_CONFIG = "--psm 6 --oem 3"
 
 # One tesseract process per cell is the cost of this approach: ~122ms each,
 # which is 51 seconds for the first page alone. The calls are independent and
-# spend their time waiting on a subprocess, so they run in a pool - 8 workers
-# brings that page to 15 seconds.
-CELL_WORKERS = 8
+# spend their time waiting on a subprocess, so they run in a pool - 16 workers
+# fills more CPU cores than 8 and cuts the bill stage by ~2-3s.
+CELL_WORKERS = 16
 
 # A table needs at least this many rules each way before it is a table.
 MIN_LINES = 3
@@ -186,7 +186,8 @@ def detect_grid(img_np: np.ndarray) -> tuple:
 
 
 def extract_cells(img_np: np.ndarray, h_lines: list, v_lines: list,
-                  column_whitelists: list = None, row_start: int = 0) -> list:
+                  column_whitelists: list = None, row_start: int = 0,
+                  row_end: int = None) -> list:
     """Read every cell the grid encloses.
 
     Args:
@@ -197,27 +198,32 @@ def extract_cells(img_np: np.ndarray, h_lines: list, v_lines: list,
             string restricts recognition to those characters, eliminating common
             misreads (B→8, $→8) in numeric columns. Empty string or None means
             no restriction for that column.
-        row_start: First grid row to read (0-indexed). Used to skip the caption
-            row when re-reading data cells with whitelists applied.
+        row_start: First grid row to read (0-indexed).
+        row_end: One past the last grid row to read. None means read to the end.
+            Used with row_start=0 to read only the first few rows cheaply when
+            locating the caption row for a known client.
 
     Returns:
         One list of cell strings per row, left to right, starting from
-        ``row_start``.
+        ``row_start`` up to (not including) ``row_end``.
     """
     if len(h_lines) < 2 or len(v_lines) < 2:
         return []
+
+    total_rows = len(h_lines) - 1
+    end = total_rows if row_end is None else min(row_end, total_rows)
 
     # Thresholded once for the whole page rather than per cell: Otsu needs the
     # spread of a full page to pick a sensible cut, and a cell holding one
     # number does not have it.
     cleaned = np.array(preprocess(Image.fromarray(img_np)))
 
-    num_data_rows = len(h_lines) - 1 - row_start
+    num_data_rows = end - row_start
     if num_data_rows <= 0:
         return []
 
     boxes = []
-    for row in range(row_start, len(h_lines) - 1):
+    for row in range(row_start, end):
         for column in range(len(v_lines) - 1):
             top, bottom = h_lines[row], h_lines[row + 1]
             left, right = v_lines[column], v_lines[column + 1]
@@ -433,36 +439,60 @@ def extract_bill(bill_images: list, client_id: str = "") -> tuple:
     whitelists: list = []
     all_rows = []
 
+    # For a known client the column order is in CLIENT_COLUMNS — no need to
+    # OCR the caption row to discover it. Skip the caption-discovery pass and
+    # read every data row in a single whitelist-restricted pass (~8s saved on
+    # the first bill page). Unknown clients still need the two-pass approach.
+    client_known = client_id in CLIENT_COLUMNS
+
     for page_index, image in enumerate(bill_images or []):
         img_np = np.array(image.convert("RGB"))
         h_lines, v_lines = detect_grid(img_np)
 
         if page_index == 0:
             header = _page_header(image, h_lines)
-            # First pass without whitelists: needed to identify the caption row
-            # and derive column names before whitelists can be assigned.
-            cells = extract_cells(img_np, h_lines, v_lines)
-            if not cells:
-                continue
 
-            caption = find_caption_row(cells)
-            captions = read_captions(img_np, h_lines, v_lines, caption)
-            column_names = get_columns(client_id, len(captions), captions,
-                                        data_rows=cells[caption + 1:])
-            whitelists = get_whitelists(column_names)
-            print(f"ocr captions: {captions}")
-            print(f"bill columns: {column_names}")
+            if client_known:
+                # Column names come from config — no need to OCR all captions.
+                # Read only the first HEADER_SEARCH_ROWS rows (cheap) to locate
+                # the caption row, then do a single whitelist-restricted pass
+                # over data rows only. Saves re-reading 26+ data rows twice.
+                num_cols = len(CLIENT_COLUMNS[client_id])
+                column_names = get_columns(client_id, num_cols, [])
+                whitelists = get_whitelists(column_names)
+                print(f"bill columns (from config): {column_names}")
 
-            for above in cells[:caption]:
-                numbered = [cell for cell in above if cell]
-                if numbered and all(_DIGITS.match(cell) for cell in numbered):
-                    header["column_numbers"] = list(above)
+                header_cells = extract_cells(img_np, h_lines, v_lines,
+                                             row_end=HEADER_SEARCH_ROWS)
+                caption = find_caption_row(header_cells)
 
-            # Second pass: re-read only data rows (below caption) with
-            # per-column whitelists so numeric columns reject B/$/S misreads.
-            data_cells = extract_cells(img_np, h_lines, v_lines, whitelists,
-                                       row_start=caption + 1)
-            all_rows.extend(data_cells)
+                data_cells = extract_cells(img_np, h_lines, v_lines, whitelists,
+                                           row_start=caption + 1)
+                all_rows.extend(data_cells)
+            else:
+                # Unknown client: first pass without whitelists to find the
+                # caption row and derive column names, then re-read data rows
+                # with whitelists applied.
+                cells = extract_cells(img_np, h_lines, v_lines)
+                if not cells:
+                    continue
+
+                caption = find_caption_row(cells)
+                captions = read_captions(img_np, h_lines, v_lines, caption)
+                column_names = get_columns(client_id, len(captions), captions,
+                                            data_rows=cells[caption + 1:])
+                whitelists = get_whitelists(column_names)
+                print(f"ocr captions: {captions}")
+                print(f"bill columns: {column_names}")
+
+                for above in cells[:caption]:
+                    numbered = [cell for cell in above if cell]
+                    if numbered and all(_DIGITS.match(cell) for cell in numbered):
+                        header["column_numbers"] = list(above)
+
+                data_cells = extract_cells(img_np, h_lines, v_lines, whitelists,
+                                           row_start=caption + 1)
+                all_rows.extend(data_cells)
         else:
             if column_names is None:
                 continue

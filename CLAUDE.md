@@ -114,11 +114,11 @@ Defined in `app.py:77–79`. A different client's PDF structure will silently ex
 | Stage | Time |
 |---|---|
 | Converting + Invoice OCR | ~10s |
-| Bill OCR | ~20s (two-pass: first to identify caption row, second with per-column whitelists) |
+| Bill OCR | ~10s (known-client single data pass + 16 workers) |
 | Tax Invoice OCR | ~20s (after parallel title scan) |
-| LR OCR | ~30s (parallel) |
+| LR OCR | ~30s (8 capped workers — unlimited caused Windows scheduling jitter) |
 | Reconciling + Excel | <1s |
-| **Total** | **~81s** |
+| **Total** | **~70s** (occasionally ~80s due to OS scheduling outliers) |
 
 ## Output accuracy (sample PDF)
 
@@ -154,9 +154,13 @@ Reconciliation result: `clear: 7, mismatch: 17, missing_lr: 7, unbilled: 7` — 
 
 ## Accuracy improvements applied
 
-1. **`ocr/column_config.py` + `ocr/bill_extractor.py`** — per-column Tesseract character whitelists: numeric columns (`amount`, `rate`, `gross_qty`, `balance_pay`, etc.) now restrict OCR to digits and punctuation, eliminating `B`/`$`/`S` misread as `8`/`8`/`5`. Text columns (`bill_no`, `delivery_date`, `party_name`, `delivery_station`) left unrestricted. `extract_cells()` now accepts `column_whitelists` and `row_start` parameters. `extract_bill()` does two passes on page 1: first without whitelists to identify the caption row and derive column names, then a second pass over data rows only with whitelists applied. Page 2 is read once directly with whitelists.
+1. **`ocr/column_config.py` + `ocr/bill_extractor.py`** — per-column Tesseract character whitelists: numeric columns (`amount`, `rate`, `gross_qty`, `balance_pay`, etc.) now restrict OCR to digits and punctuation, eliminating `B`/`$`/`S` misread as `8`/`8`/`5`. Text columns (`bill_no`, `delivery_date`, `party_name`, `delivery_station`) left unrestricted. `extract_cells()` now accepts `column_whitelists`, `row_start`, and `row_end` parameters. For known clients, `extract_bill()` reads only the first `HEADER_SEARCH_ROWS` rows (cheap) to locate the caption row, then does a single whitelist-restricted pass over data rows — skipping the full two-pass approach. Unknown clients still use two passes. Page 2+ read once directly with whitelists.
 
 2. **`ocr/normaliser.py` — `normalise_vehicle_no()`** — position-aware OCR correction for Indian vehicle plates (`SS DD LLL NNNN` format): digits corrected to letters at state-code positions (0–1), letters corrected to digits at district (2–3) and serial (last 4) positions. Only visually ambiguous characters are substituted (`0/O`, `1/I`, `5/S`, `6/G`, `8/B`, `2/Z`). Lifted reconciliation from `clear: 4` to `clear: 7`.
+
+3. **`ocr/bill_extractor.py`** — `CELL_WORKERS` increased from 8 to 16: fills more CPU cores during parallel cell OCR, saving ~2s on the bill stage.
+
+4. **`app.py`** — LR `ThreadPoolExecutor` capped at 8 workers: previously unlimited (defaulted to ~35 on this machine), which caused Windows process-scheduling jitter and ~10s variance between runs. Capping at 8 gives consistent ~70s total runtime.
 
 ---
 

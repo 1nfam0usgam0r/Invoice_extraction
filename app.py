@@ -172,7 +172,7 @@ def _run_pipeline(job_id: str) -> None:
 
     job['status'] = 'lr_ocr'
     job['detail'] = f'{len(lr_images)} LR page(s)'
-    with ThreadPoolExecutor() as pool:
+    with ThreadPoolExecutor(max_workers=8) as pool:
         lr_records = list(pool.map(extract_lr, lr_images))
 
     job['status'] = 'reconciling'
