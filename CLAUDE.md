@@ -13,24 +13,48 @@ Indian logistics invoice reconciliation tool. A transporter submits a combined P
 
 ## Running the app
 
-```powershell
-# Activate the venv first
-.\venv\Scripts\Activate.ps1
+```cmd
+cd C:\Users\1nfam\Downloads\Invoice_extraction-update
 
-# Start the Flask dev server
+:: Activate the venv
+venv\Scripts\activate.bat
+
+:: Start the Flask dev server
 python app.py
 
-# Run the preprocessing test
+:: Run the preprocessing test
 python test_preprocessing.py
 
-# Debug bill extraction on a specific PDF (edit path inside)
+:: Debug bill extraction on a specific PDF (edit path inside)
 python debug_bill.py
 
-# Debug grid detection
+:: Debug grid detection
 python debug_grid.py
 ```
 
 The server listens on `http://localhost:5000`. Upload a PDF via the browser UI; poll `/status/<job_id>` for progress.
+
+---
+
+## GitHub
+
+Repository: https://github.com/1nfam0usgam0r/Invoice_extraction
+
+Branches: `main` (stable — do not touch), `update` (active development)
+
+```cmd
+cd C:\Users\1nfam\Downloads\Invoice_extraction-update
+
+:: First-time setup — connect local folder to the remote
+git init
+git remote add origin https://github.com/1nfam0usgam0r/Invoice_extraction.git
+git checkout -b update
+
+:: Push changes to the update branch
+git add .
+git commit -m "your message here"
+git push origin update
+```
 
 ---
 
@@ -49,7 +73,8 @@ The server listens on `http://localhost:5000`. Upload a PDF via the browser UI; 
 ### Request flow
 
 ```
-Browser → POST /process → app.py
+Browser → POST /upload → app.py          (saves PDF, creates job, returns job_id)
+Browser → POST /process/<job_id> → app.py (starts pipeline in background thread)
   → _run_pipeline() in daemon thread
       → pdf_to_images()         (ocr/pdf_handler.py)
       → extract_invoice()       (ocr/invoice_extractor.py)
@@ -57,14 +82,17 @@ Browser → POST /process → app.py
       → extract_bill()          (ocr/bill_extractor.py)
       → extract_tax_invoice()   (ocr/tax_invoice_extractor.py)
       → extract_lr() × N        (ocr/lr_extractor.py)
+      → ink_separation()        (ocr/ink_separation.py) — handwritten ack box per LR
       → normalise_bill_row/lr_record  (ocr/normaliser.py)
       → reconcile()             (ocr/reconciler.py)
       → write_excel()           (ocr/excel_writer.py)
-Browser polls → GET /status/<job_id>
-Browser → GET /download/<job_id>
+Browser polls  → GET /status/<job_id>
+Browser        → GET /download/<job_id>
+Browser        → GET /debug/<job_id>     (raw Tesseract detections for bill page)
+GET /health                              (liveness check)
 ```
 
-`/process` returns immediately; the pipeline runs in a background thread. Progress is tracked via `job_store[job_id]['status']`, which the frontend polls.
+`POST /upload` returns immediately with a `job_id`. `POST /process/<job_id>` starts the pipeline in a daemon thread and also returns immediately. Progress is tracked via `job_store[job_id]['status']`, which the frontend polls.
 
 ### OCR layer (`ocr/reader.py`)
 
@@ -73,6 +101,14 @@ Single shared OCR engine: Tesseract via pytesseract. The module auto-detects `te
 ### Bill extraction (`ocr/bill_extractor.py`)
 
 Uses morphological line detection (OpenCV) to find the printed grid, extracts cell bounding boxes from intersections, then OCRs each cell individually with `psm=6`. The table spans two pages; both are read and their rows combined under the column names from page 1. Column identity is determined by `ocr/column_classifier.py` using fuzzy caption matching (rapidfuzz) and per-column validators.
+
+### Ink separation (`ocr/ink_separation.py`)
+
+Splits a scanned LR page into a printed layer and a coloured-ink layer (rubber stamps, blue/red signatures). Reads the "CUSTOMER ACKNOWLEDGEMENT DETAILS" box — received weight, date, remark — off the ink layer so handwritten entries are read without the printed form underneath interfering. Grayscale pages are detected and passed through unchanged. Called by `lr_extractor.py`, not directly by the pipeline.
+
+### LR extractor legacy (`ocr/lr_extractor_legacy.py`)
+
+Earlier implementation of LR extraction kept for reference. Not called by the pipeline — `ocr/lr_extractor.py` is the active one.
 
 ### Client/column configuration (`ocr/column_config.py`)
 
@@ -148,7 +184,7 @@ Reconciliation result: `clear: 7, mismatch: 17, missing_lr: 7, unbilled: 7` — 
 - Page layout hardcoded — a different client's PDF structure silently extracts wrong data (`app.py:77–79`). A runtime warning is now emitted if the page count doesn't cover the expected slices.
 - GST rate not extracted from document — tax invoice totals must be verified manually.
 - `job_store` is in-memory only, capped at 50 jobs — no persistence across restarts.
-- Medium-priority issues not yet fixed: `job_store` has no thread lock (race condition on concurrent uploads), no concurrency cap on `ThreadPoolExecutor` (resource exhaustion under simultaneous jobs), no job timeout if Tesseract hangs, downloaded files named by UUID.
+- Medium-priority issues not yet fixed: `job_store` has no thread lock (race condition on concurrent uploads), no concurrency cap on `ThreadPoolExecutor` (resource exhaustion under simultaneous jobs), no job timeout if Tesseract hangs, downloaded files use a short UUID prefix (`extraction_<8chars>.xlsx`) rather than a meaningful name.
 
 ---
 
